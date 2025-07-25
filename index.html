@@ -1,0 +1,285 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#e57373">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PlanPal</title>
+  <style>
+
+    body {
+      font-family: "Comic Sans MS", "Comic Sans", cursive, sans-serif;
+      max-width: 600px;
+      margin: 20px auto;
+      padding: 20px;
+      background: linear-gradient(to bottom, #ffe4e9, #d4f0e8);
+    }
+    h1 {
+      color: #e57373;
+      text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.2);
+      text-align: center;
+    }
+    #chat-container {
+      border: 2px solid #ffab91;
+      padding: 10px;
+      height: 400px;
+      overflow-y: scroll;
+      background-color: #fff9c4;
+      font-family: "Comic Sans MS", "Comic Sans", cursive, sans-serif;
+    }
+    .message {
+      margin: 10px;
+      padding: 10px;
+      border-radius: 8px;
+      font-family: "Comic Sans MS", "Comic Sans", cursive, sans-serif;
+    }
+    .bot {
+      background-color: #e1bee7;
+      color: #333333;
+      text-align: left;
+    }
+    .user {
+      background-color: #b2dfdb;
+      color: #333333;
+      text-align: right;
+    }
+    #input-container {
+      display: flex;
+      margin-top: 10px;
+    }
+    #user-input {
+      flex-grow: 1;
+      padding: 10px;
+      border: 2px solid #ffab91;
+      border-radius: 5px;
+      background-color: #ffccbc;
+      color: #333333;
+      font-family: "Comic Sans MS", "Comic Sans", cursive, sans-serif;
+    }
+    #send-btn {
+      padding: 10px 20px;
+      margin-left: 10px;
+      background-color: #90caf9;
+      color: #ffffff;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-family: "Comic Sans MS", "Comic Sans", cursive, sans-serif;
+    }
+    #send-btn:hover {
+      background-color: #4db6ac;
+    }
+  </style>
+</head>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('service-worker.js')
+      .then(() => console.log('✅ Service Worker Registered'))
+      .catch(error => console.log('❌ SW registration failed:', error));
+  });
+}
+</script>
+
+<body>
+  <h1>PlanPal</h1>
+  <div id="chat-container"></div>
+  <div id="input-container">
+    <input type="text" id="user-input" placeholder="Say something like 'add coffee tomorrow at 3 PM' or 'list' 😎">
+    <button id="send-btn">Send</button>
+  </div>
+
+  <script>
+    const chatContainer = document.getElementById('chat-container');
+    const userInput = document.getElementById('user-input');
+    const sendBtn = document.getElementById('send-btn');
+
+    let schedules = JSON.parse(localStorage.getItem('schedules')) || [];
+
+    function displayMessage(message, sender) {
+      const div = document.createElement('div');
+      div.className = `message ${sender}`;
+      div.textContent = message;
+      chatContainer.appendChild(div);
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+
+    function saveSchedules() {
+      localStorage.setItem('schedules', JSON.stringify(schedules));
+    }
+
+    function parseDateTime(input) {
+      const now = new Date();
+      let dateTimeStr = input.toLowerCase().trim();
+      let dateTime;
+
+      // Handle "tomorrow" or specific dates
+      if (dateTimeStr.includes('tomorrow')) {
+        const tomorrow = new Date(now);
+        tomorrow.setDate(now.getDate() + 1);
+        dateTimeStr = dateTimeStr.replace('tomorrow', tomorrow.toISOString().split('T')[0]);
+      } else if (!dateTimeStr.includes('2025-')) {
+        // Assume today if no date specified
+        dateTimeStr = `2025-07-25 ${dateTimeStr}`;
+      }
+
+      // Handle "pm" or "am"
+      dateTimeStr = dateTimeStr.replace(' pm', '').replace(' am', '');
+      dateTime = new Date(dateTimeStr);
+      
+      // Adjust for PM if needed
+      if (input.toLowerCase().includes('pm') && !input.includes('12:') && dateTime.getHours() < 12) {
+        dateTime.setHours(dateTime.getHours() + 12);
+      }
+
+      return dateTime.toString() !== 'Invalid Date' ? dateTime : null;
+    }
+
+    function addSchedule(event, dateTime) {
+      const schedule = { event, dateTime: new Date(dateTime).toISOString(), alerted: false };
+      schedules.push(schedule);
+      saveSchedules();
+      const responses = [
+        `Sweet! ${event} is locked in for ${new Date(dateTime).toLocaleString()}! 🎉`,
+        `Gotcha! ${event} added for ${new Date(dateTime).toLocaleString()}! ☕`,
+        `Nice one! ${event} is set for ${new Date(dateTime).toLocaleString()}! 😎`
+      ];
+      displayMessage(responses[Math.floor(Math.random() * responses.length)], 'bot');
+    }
+
+    function listSchedules() {
+      if (schedules.length === 0) {
+        displayMessage('No plans yet, buddy! Wanna add something fun? 😎', 'bot');
+      } else {
+        displayMessage('Here’s your vibe check:', 'bot');
+        schedules.forEach((schedule, index) => {
+          displayMessage(`${index + 1}. ${schedule.event} on ${new Date(schedule.dateTime).toLocaleString()}`, 'bot');
+        });
+      }
+    }
+
+    function deleteSchedule(index) {
+      if (index > 0 && index <= schedules.length) {
+        const removed = schedules.splice(index - 1, 1);
+        saveSchedules();
+        const responses = [
+          `Poof! ${removed[0].event} is outta here! ✨`,
+          `Boom! ${removed[0].event} gone like magic! 🪄`,
+          `Zap! ${removed[0].event} vanished! 🚀`
+        ];
+        displayMessage(responses[Math.floor(Math.random() * responses.length)], 'bot');
+      } else {
+        displayMessage('Oops, that number’s not on the list! Try again, pal! 😅', 'bot');
+      }
+    }
+
+    function checkReminders() {
+      const now = new Date();
+      schedules.forEach(schedule => {
+        const eventTime = new Date(schedule.dateTime);
+        const diffMs = eventTime - now;
+        const diffMins = diffMs / (1000 * 60);
+        if (diffMins > 0 && diffMins <= 5 && !schedule.alerted) {
+          alert(`Yo! ${schedule.event} is coming up soon at ${eventTime.toLocaleString()}! 🚀`);
+          schedule.alerted = true;
+          saveSchedules();
+        }
+      });
+    }
+
+    function processInput(input) {
+      displayMessage(input, 'user');
+      input = input.toLowerCase().trim();
+
+      if (input.startsWith('add ') || input.startsWith('schedule ') || input.startsWith('remind me ')) {
+        const parts = input.replace('add ', '').replace('schedule ', '').replace('remind me ', '').split(' at ');
+        if (parts.length >= 2) {
+          const event = parts[0].trim();
+          const dateTimeStr = parts.slice(1).join(' at ').trim();
+          const dateTime = parseDateTime(dateTimeStr);
+          if (dateTime) {
+            addSchedule(event, dateTime);
+          } else {
+            displayMessage('Whoops! Can’t read that date. Try something like "tomorrow at 3 PM" or "2025-07-26 14:00". 😊', 'bot');
+          }
+        } else {
+          displayMessage('Gimme a bit more, like "add coffee tomorrow at 3 PM"! You got this! 😉', 'bot');
+        }
+      } else if (input === 'list') {
+        listSchedules();
+      } else if (input.startsWith('delete ')) {
+        const index = parseInt(input.slice(7));
+        if (!isNaN(index)) {
+          deleteSchedule(index);
+        } else {
+          displayMessage('Need a number to delete, buddy! Type "list" to see what’s up. 😜', 'bot');
+        }
+      } else if (input === 'help' || input === 'what can you do' || input === 'what can you do?') {
+        displayMessage('I’m your PlanPal, here to vibe! 😎 You can say stuff like:\n- "add coffee tomorrow at 3 PM"\n- "schedule a party at 2025-07-26 18:00"\n- "list" to see your plans\n- "delete 1" to zap a plan\nI’ll remind you 5 minutes before with a fun alert! 🚀', 'bot');
+      } else {
+        displayMessage('Hmm, not sure what you mean! Try "add coffee tomorrow at 3 PM", "list", "delete 1", or "help" for the scoop! 😎', 'bot');
+      }
+    }
+
+    sendBtn.addEventListener('click', () => {
+      const input = userInput.value;
+      if (input) {
+        processInput(input);
+        userInput.value = '';
+      }
+    });
+
+    userInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter' && userInput.value) {
+        processInput(userInput.value);
+        userInput.value = '';
+      }
+    });
+
+    setInterval(checkReminders, 60 * 1000);
+
+    displayMessage('Yo, I’m PlanPal, your chill scheduling buddy! 😎 Say stuff like "add coffee tomorrow at 3 PM" or "list" to get started! 🚀', 'bot');
+  </script>
+</body>
+</html>
